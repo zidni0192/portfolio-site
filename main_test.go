@@ -1,32 +1,57 @@
 package main
 
 import (
-	"bytes"
-	"io"
-	"os"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func TestMainPrintsScaffoldMessage(t *testing.T) {
-	originalStdout := os.Stdout
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+func TestHomeRendersPortfolioContent(t *testing.T) {
+	content := Portfolio{Name: "Casey", Role: "Engineer", Introduction: "Building useful tools.", Projects: []Project{{Name: "Alpha", Description: "A project", URL: "https://example.com", Tags: []string{"Go"}}}}
+	recorder := httptest.NewRecorder()
+	newHandler(content).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	response := recorder.Result()
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
 	}
-	os.Stdout = writer
-	t.Cleanup(func() { os.Stdout = originalStdout })
+	if got := response.Header.Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{"Hello, I’m Casey.", "Building useful tools.", "Alpha", "A project", ">Go<", "aria-labelledby=\"projects-heading\"", "focus-visible"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body missing %q", want)
+		}
+	}
+}
 
-	run()
+func TestHomeHandlesEmptyProjectList(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	newHandler(Portfolio{Name: "Casey"}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(recorder.Body.String(), "No projects to show yet.") {
+		t.Fatal("empty portfolio fallback not rendered")
+	}
+}
 
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
+func TestHomeEscapesContentAndSortsProjects(t *testing.T) {
+	content := Portfolio{Name: "<script>alert(1)</script>", Projects: []Project{{Name: "Zulu"}, {Name: "Alpha"}}}
+	recorder := httptest.NewRecorder()
+	newHandler(content).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := recorder.Body.String()
+	if strings.Contains(body, "<script>alert(1)") {
+		t.Fatal("unescaped user content in response")
 	}
-	os.Stdout = originalStdout
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
+	if strings.Index(body, "Alpha") > strings.Index(body, "Zulu") {
+		t.Fatal("projects are not sorted by name")
 	}
-	if !bytes.Equal(output, []byte("portfolio-site scaffold\n")) {
-		t.Fatalf("unexpected output %q", output)
+}
+
+func TestHomeNotFoundForUnknownPath(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	newHandler(portfolio).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
